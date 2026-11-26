@@ -1,0 +1,39 @@
+@startuml
+title 读取 handoff.txt：一次工具调用、两次模型请求
+autonumber
+
+actor 用户
+participant "交互与会话层\ninteractive-mode.ts" as UI
+participant "Agent 执行层\nagent.ts / agent-loop.ts" as Agent
+participant "模型请求层\nstreamFunction → pi-ai provider/API adapter" as Model
+participant "read 工具\ncore/tools/read.ts" as Read
+
+用户 -> UI: 输入“请用 read 工具读取当前目录的 handoff.txt……”
+UI -> UI: 编辑器 onSubmit(text)
+UI -> Agent: AgentSession.prompt(text)
+Agent -> Agent: Agent.prompt(messages)\n→ runAgentLoop(...)
+
+Agent -> Model: 第一次请求：streamFunction(model, llmContext, ...)
+Model -> Model: provider/API adapter → 远端模型服务：发送第一次模型请求
+Model -> Model: 远端模型服务 → provider/API adapter：返回 assistant toolCall 响应
+Agent -> Read: execute(..., { path: "handoff.txt" }, ...)
+Read -> Read: resolveReadPathAsync(path, cwd)\n→ ops.access(absolutePath)
+Read -> Read: ops.createReadStream(absolutePath, { signal })\n→ readLocalFileChunks(path)
+Read -> Read: fsOpen(path, "r") → handle.createReadStream({ end, autoClose: false })
+Read -> Read: selectLinesFromStream(chunks, startLine, limit, signal)
+Read --> Agent: 文件内容作为 toolResult
+Agent -> Agent: currentContext.messages.push(result)
+
+Agent -> Model: 第二次请求：streamFunction(model, 更新后的 llmContext, ...)
+note right of Model
+  更新上下文包含 read 工具返回的 handoff.txt 内容。
+  模型没有直接读取本地文件。
+end note
+Model -> Model: provider/API adapter → 远端模型服务：发送第二次模型请求
+Model -> Model: 远端模型服务 → provider/API adapter：返回最终 assistant 文本
+Model --> Agent: stream 返回最终 assistant 消息
+
+Agent -> UI: AgentSession 订阅收到 message_update / message_end
+UI -> UI: handleEvent(event)\nmessage_update: streamingComponent.updateContent(...)\nmessage_end: streamingComponent.updateContent(..., false)
+UI --> 用户: TUI 渲染最终回复
+@enduml
